@@ -1,3 +1,1 @@
 # AGENTS.md
-
-isolation: container
