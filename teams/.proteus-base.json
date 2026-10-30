@@ -1,0 +1,23 @@
+{
+  "ROUTING.md": {
+    "sha256": "77d7e6fe6b40ec284b2f7d0db3a71f2e20b1d61a65c8753deeefccb226e58a8d"
+  },
+  "devops/PROFILE.md": {
+    "sha256": "d50dddfb3efc1c61b398604910471a3428320a86a7dd411ec140be2c88748ee4"
+  },
+  "devops/skills.txt": {
+    "sha256": "bb3eb71dd3953ec3c2028e2ccc813642d50d58d5015e4c734260e7007b02986b"
+  },
+  "qa/PROFILE.md": {
+    "sha256": "10013a295e8eff47c0694dd1c968410279673a7ebc324ec51129ff5bb7750661"
+  },
+  "qa/skills.txt": {
+    "sha256": "6c5ffda3c89af98d82365db8a66fe63968f0b4f99257e05877410fa014eb6051"
+  },
+  "security/PROFILE.md": {
+    "sha256": "895e6fa699afb012f32a0b8d59622b91c012cbc145ec32dcf87d3bea31d0bd14"
+  },
+  "security/skills.txt": {
+    "sha256": "a73ad0d5a8224d227dc4e3ed53827408d575c3745a6a99fa67246d05841aa487"
+  }
+}

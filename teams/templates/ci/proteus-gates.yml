@@ -1,0 +1,137 @@
+# .github/workflows/proteus-gates.yml — written by the Proteus scaffold ticket.
+# Every PR into proteus/* runs the same gates the worker ran. The ruleset on proteus/*
+# (install.js --protect) requires a check named exactly `gates` green; keep the job id.
+# It also requires two commit statuses on the PR head, which this file never posts:
+# proteus/verdict, the verifier's MERGE (proteus-signoff.js), and proteus/security, posted by
+# proteus-trust.yml from the base branch. A push after the review leaves the new head without them.
+# Every push to proteus/* (each merge) runs `gates` again on the integrated tree and then `qa`,
+# the mechanical QA: e2e, smoke from a fresh install, rebuild of the deliverables, mutation
+# testing on the files the merge changed. The QA verifier reads these runs instead of
+# re-running them (teams/qa/PROFILE.md); keep the step names, it reads failures by them.
+# Each EDIT-* step below fails until you replace it, so an unfilled template is never green.
+# PRs into main come from the Direct and Quick tiers (SKILL.md rule 3); rename main if the default branch differs.
+# Keep it hardened as you fill it in. PR code runs here, and a fork names its own head branch:
+# - a ${{ }} value a script needs goes through env: and is read as "$VAR", never written inside run:;
+# - the token is read-only (permissions:) and not left in .git/config (persist-credentials: false);
+#   add a scope only to the job whose step needs it;
+# - every action is pinned to a full commit SHA with its version as a comment. To find one:
+#   gh api repos/OWNER/ACTION/git/ref/tags/TAG; if its object.type is "tag", follow it with
+#   gh api repos/OWNER/ACTION/git/tags/SHA to reach the commit;
+# - installs skip lifecycle scripts where the tool allows (npm ci --ignore-scripts).
+name: proteus-gates
+on:
+  pull_request:
+    branches: ["proteus/**", "main"]
+  push:
+    branches: ["proteus/**"]
+permissions:
+  contents: read
+jobs:
+  gates:
+    # every push to and PR into a run branch; into main only a Quick ticket's (the human's own PRs are not Proteus's to gate)
+    if: github.event_name == 'push' || startsWith(github.base_ref, 'proteus/') || startsWith(github.head_ref, 'proteus-work/quick/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # the PR head, not the synthetic merge commit; on a push, the pushed commit
+          fetch-depth: 0
+          persist-credentials: false
+      # EDIT: one setup action for the stack (AGENTS.md ## Learned `package manager:`), pinned to a full commit SHA, e.g.
+      #   - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0   with: { node-version: 22, cache: npm }
+      #   - uses: astral-sh/setup-uv@<commit SHA of the tag> # vX.Y.Z
+      #   - uses: dtolnay/rust-toolchain@<commit SHA of the stable branch's head> # stable
+      - run: echo "EDIT-install not filled in" >&2; exit 1  # ## Learned `package manager:`, e.g. npm ci --ignore-scripts | uv sync | cargo fetch
+      # a gate that was red before Proteus runs through the baseline ratchet (teams/baseline.json), which fails
+      # only on findings the recorded baseline lacks, e.g.
+      #   - run: node teams/templates/hooks/proteus-baseline.js test -- npx vitest run
+      - run: echo "EDIT-typecheck not filled in" >&2; exit 1  # ## Learned `gate:`, its typecheck
+      - run: echo "EDIT-lint not filled in" >&2; exit 1  # ## Learned `gate:`, its lint
+      - run: echo "EDIT-test not filled in" >&2; exit 1  # ## Learned `gate:`, its test run
+      - run: echo "EDIT-deadcode not filled in" >&2; exit 1  # ## Learned `gate:`, its dead-code check, e.g. npx fallow dead-code | vulture . --min-confidence 80 | cargo machete
+      # a worker's PR (head proteus-work/<run>/<id>) may change only the ticket's owned paths, as the lead
+      # recorded them in .proteus/owned/<id> on the run branch; the check reads the base's copy, never the
+      # PR's or its body, and runs the base's checker, so the PR changes neither. PRs into main (Quick,
+      # Direct, which the human merges) and runs cut before the records read the PR body's line,
+      # "Owned: src/a/ tests/a.test.js". Shell writes (sed -i, redirects) skip the edit hooks, so this
+      # is their check.
+      - name: owned paths
+        if: startsWith(github.head_ref, 'proteus-work/')
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add -q --detach "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          node "$RUNNER_TEMP"/base/teams/templates/hooks/proteus-owned-check.js --ci "origin/$BASE_REF"
+      # the change must fit its declared tier (the PR body's "Tier:" line, standard without one) by the
+      # tiers block of teams/ROUTING.md as of the base; a change that outgrew it is re-run at the tier named
+      - name: tier
+        if: startsWith(github.head_ref, 'proteus-work/')
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node teams/templates/hooks/proteus-tier.js --ci "origin/$BASE_REF"
+      - name: commit messages
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for c in $(git rev-list "origin/$BASE_REF..HEAD"); do
+            git log -1 --format=%B "$c" > "$RUNNER_TEMP/msg" && node teams/templates/hooks/commit-msg.js "$RUNNER_TEMP/msg" || exit 1
+          done
+  # Direct tier: a batched docs PR from proteus-work/direct/<batch> into main runs the mechanical gates only;
+  # the tier step fails it once the batch outgrows Direct
+  direct:
+    if: startsWith(github.head_ref, 'proteus-work/direct/') && !startsWith(github.base_ref, 'proteus/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - run: echo "EDIT-docs not filled in" >&2; exit 1  # ## Learned `gate:`, its docs checks (markdown lint, link check, spelling), e.g. npx markdownlint-cli2 && lychee . && npx cspell .
+      - name: owned paths
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add -q --detach "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          node "$RUNNER_TEMP"/base/teams/templates/hooks/proteus-owned-check.js --ci "origin/$BASE_REF"
+      - name: tier
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node teams/templates/hooks/proteus-tier.js --ci "origin/$BASE_REF"
+      - name: commit messages
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for c in $(git rev-list "origin/$BASE_REF..HEAD"); do
+            git log -1 --format=%B "$c" > "$RUNNER_TEMP/msg" && node teams/templates/hooks/commit-msg.js "$RUNNER_TEMP/msg" || exit 1
+          done
+  qa:
+    if: github.event_name == 'push'
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # EDIT: the same setup action and install as the gates job (## Learned `package manager:`)
+      # A step this project has no use for (no e2e suite, no non-code deliverable) is deleted, not
+      # left green; a rebuild that needs hardware CI lacks (a GPU render) is deleted too and QA runs it locally.
+      - name: e2e
+        run: echo "EDIT-e2e not filled in" >&2; exit 1  # teams/qa/PROFILE.md `e2e`, e.g. npx playwright test | uv run pytest tests/e2e | cargo test --test e2e
+      - name: smoke
+        run: echo "EDIT-smoke not filled in" >&2; exit 1  # teams/qa/PROFILE.md `smoke`: install from a fresh dir (npm pack + npm i <tgz> | pip install . | cargo install --path .), run the documented command
+      - name: rebuild
+        run: echo "EDIT-rebuild not filled in" >&2; exit 1  # teams/qa/PROFILE.md `rebuild`: rebuild every non-code deliverable from the branch alone and compare with the merged evidence
+      # the files this push changed, mutated; exits non-zero on any surviving mutant (Stryker: thresholds.break
+      # 100 in its config). The push that creates the run branch has no before commit and is skipped.
+      - name: mutation
+        if: github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: echo "EDIT-mutation not filled in" >&2; exit 1  # teams/qa/PROFILE.md `mutation`: f=$(git diff --name-only --diff-filter=AM "$BEFORE" HEAD -- src | paste -sd, -); [ -z "$f" ] || npx stryker run --mutate "$f" | mutmut run --paths-to-mutate "$f" | cargo mutants --in-diff <(git diff "$BEFORE" HEAD)

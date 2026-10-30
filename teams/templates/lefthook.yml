@@ -1,0 +1,22 @@
+# lefthook (https://lefthook.dev). Installed by the Proteus scaffold ticket.
+# Replace the EDIT lines with the gate commands recorded in AGENTS.md ## Learned. A gate with a recorded
+# baseline runs as `node teams/templates/hooks/proteus-baseline.js <gate> -- <command>`, same as in CI.
+commit-msg:
+  commands:
+    conventional:
+      # committed with teams/, so every CLI and every clone has it (.claude/ and .codex/ hooks are machine-local)
+      run: node teams/templates/hooks/commit-msg.js {1}
+
+pre-commit:
+  parallel: true
+  commands:
+    typecheck:
+      run: echo EDIT-typecheck   # e.g. npx tsc --noEmit | uv run mypy . | cargo check
+    lint:
+      run: echo EDIT-lint        # e.g. npx eslint {staged_files} | ruff check | cargo clippy -- -D warnings
+
+pre-push:
+  commands:
+    test:
+      # through the gates cache: a tree the worker already passed is not tested again
+      run: node teams/templates/hooks/proteus-gates-cache.js "echo EDIT-test"   # e.g. "npx vitest run" | "uv run pytest -q" | "cargo test"

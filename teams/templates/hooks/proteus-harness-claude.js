@@ -1,0 +1,442 @@
+// Claude Code adapter: maps Claude Code's hook JSON to the Proteus event (see proteus-harness.js),
+// answers in Claude Code's hook protocol, reads its JSONL transcripts, and registers the hooks
+// in .claude/settings.local.json.
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { tailLines } = require(path.join(__dirname, "proteus-lib.js"));
+const { claudeDir } = require(path.join(__dirname, "proteus-confine.js"));
+
+const name = "claude";
+// the default model ladder, lowest first; solo models run once per project. Claude Mythos is
+// Claude Fable offered under another name (Project Glasswing), so it sits on Fable's rung.
+const models = { ladder: ["haiku", "sonnet", "opus", "fable"], floor: "sonnet", solo: ["fable"], aliases: { mythos: "fable" } };
+// the Agent tool takes a model per spawn but no effort; a subagent's effort is its frontmatter
+// `effort:` (the judge agents carry high), else the session's
+const spawnEffort = "";
+const bypass = "PROTEUS=0 claude";
+
+const KINDS = {
+  SessionStart: "session-start",
+  UserPromptSubmit: "prompt",
+  PreToolUse: "pre-tool",
+  PostToolUse: "post-tool",
+  PostToolUseFailure: "tool-failed",
+  Stop: "stop",
+  SubagentStop: "subagent-stop",
+  TeammateIdle: "idle",
+};
+const TOOLS = { Edit: "edit", Write: "edit", MultiEdit: "edit", NotebookEdit: "edit", Read: "read", Bash: "shell", Monitor: "monitor", Agent: "spawn", Task: "spawn" };
+
+const projectRoot = (raw) => process.env.CLAUDE_PROJECT_DIR || (raw && raw.cwd) || process.cwd();
+
+function event(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const ti = r.tool_input && typeof r.tool_input === "object" ? r.tool_input : {};
+  const m = r.model;
+  return {
+    kind: KINDS[r.hook_event_name] || "",
+    session: r.session_id || "",
+    cwd: r.cwd || "",
+    root: projectRoot(r),
+    source: r.source || "",
+    agent: r.agent_id || "",
+    agentType: r.agent_type || "",
+    teammate: r.teammate_name || "",
+    permissionMode: typeof r.permission_mode === "string" ? r.permission_mode : "",
+    model: typeof m === "string" ? m : m && typeof m === "object" ? m.id || m.display_name || "" : "",
+    tool: TOOLS[r.tool_name] || "",
+    toolName: r.tool_name || "",
+    toolUseId: r.tool_use_id || "",
+    path: ti.file_path || ti.notebook_path || "",
+    paths: ti.file_path || ti.notebook_path ? [ti.file_path || ti.notebook_path] : [],
+    command: typeof ti.command === "string" ? ti.command : "",
+    workdir: "", // Bash has no working-dir field; Codex's shell does
+    background: ti.run_in_background === true,
+    spawnModel: typeof ti.model === "string" ? ti.model : "",
+    spawnType: typeof ti.subagent_type === "string" ? ti.subagent_type : "",
+    spawnName: typeof ti.name === "string" ? ti.name : "",
+    prompt: typeof r.prompt === "string" ? r.prompt : "",
+    // a prompt from anything but the human: task notifications, loop wakeups, peer messages
+    fromHuman: !r.source || r.source === "user" || r.source === "sdk",
+    output: outputText(r.tool_response),
+    error: typeof r.error === "string" ? r.error : "",
+    stopActive: r.stop_hook_active === true,
+    busy: Array.isArray(r.background_tasks) && r.background_tasks.length > 0,
+    raw: r,
+  };
+}
+
+function outputText(res) {
+  return typeof res === "string" ? res : res && typeof res === "object" ? [res.stdout, res.stderr].filter((x) => typeof x === "string").join("\n") : "";
+}
+
+// ---- answers
+
+// refuse the tool call: exit 2, stderr reaches the model as the tool's error.
+// json: a PreToolUse permission decision instead, the reason shown as given (exit 0).
+function deny(why, { json = false } = {}) {
+  if (json) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } }));
+    return;
+  }
+  try { fs.writeSync(2, `proteus: ${why}\n`); } catch {} // sync: process.exit drops async pipe writes
+  process.exit(2);
+}
+
+// let the human decide the tool call: a PreToolUse "ask" opens the permission dialog with why in it (exit 0)
+function ask(why) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: why } }));
+}
+
+// why a PreToolUse "ask" would not reach the human as a dialog in this session, "" when it does
+// (https://code.claude.com/docs/en/permission-modes and /docs/en/hooks, as of 2.1.302; probed with claude -p):
+// default, acceptEdits: a dialog. auto: a dialog from 2.1.211 (before, the classifier could approve it unseen).
+// plan, dontAsk, bypassPermissions, and no mode named: no dialog to rely on. -p and the SDK
+// (CLAUDE_CODE_ENTRYPOINT sdk-*): no dialog; the ask is denied, or a program answers it, not the human.
+const ASK_FROM = [2, 1, 211];
+function claudeVersion() {
+  const pick = (s, re) => (re.exec(String(s || "")) || []).slice(1, 4).map(Number);
+  const exec = pick(path.basename(process.env.CLAUDE_CODE_EXECPATH || ""), /^(\d+)\.(\d+)\.(\d+)$/);
+  if (exec.length === 3) return exec;
+  // "2.1.302 (Claude Code)"; anything else on PATH named claude is no answer
+  try { return pick(require("child_process").execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }), /^(\d+)\.(\d+)\.(\d+) \(Claude Code\)/m); } catch { return []; }
+}
+function noAsk(ev) {
+  if (/^sdk/i.test(process.env.CLAUDE_CODE_ENTRYPOINT || "")) return "a headless session (claude -p or the Agent SDK) shows no permission dialog";
+  const mode = ev.permissionMode;
+  if (mode === "default" || mode === "acceptEdits") return "";
+  if (mode === "auto") {
+    const v = claudeVersion();
+    const at = v.length === 3 && v.map((n, i) => n - ASK_FROM[i]).find((d) => d !== 0);
+    return v.length === 3 && !(at < 0) ? "" : `auto mode shows a hook's ask as a dialog only from Claude Code ${ASK_FROM.join(".")}${v.length === 3 ? `; this is ${v.join(".")}` : ", and the version is unknown"}`;
+  }
+  if (mode === "plan") return "plan mode runs no commands";
+  if (mode === "dontAsk") return "dontAsk mode denies every permission prompt";
+  if (mode === "bypassPermissions") return "bypassPermissions mode shows no permission prompts";
+  return mode ? `permission mode ${mode} is not one Proteus knows to show the dialog` : "the hook input names no permission mode";
+}
+
+// add text to the model's context for this event (kind: the hook's own event when the JSON
+// names none); a session start's plain stdout is its context
+function context(ev, text, kind = ev.kind) {
+  if (kind === "session-start") { process.stdout.write(text.endsWith("\n") ? text : text + "\n"); return; }
+  const hookEventName = ev.raw.hook_event_name || Object.keys(KINDS).find((k) => KINDS[k] === kind);
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } }) + "\n");
+}
+
+// an agent that tried to stop keeps working, with the reason as its next instruction
+function keepGoing(ev, reason) {
+  if (ev.kind === "idle") deny(reason); // exit 2 keeps the teammate working
+  process.stdout.write(JSON.stringify({ decision: "block", reason }) + "\n");
+}
+
+// after the tool already ran (PostToolUse): the reason reaches the model as feedback it must act on
+function postBlock(ev, reason) {
+  process.stdout.write(JSON.stringify({ decision: "block", reason }) + "\n");
+}
+
+// ---- transcripts: JSONL, one entry per line; main-thread entries lack isSidechain
+
+// newest-first iteration over main-thread transcript entries
+function* entriesBackward(lines, sidechain = false) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let e;
+    try { e = JSON.parse(lines[i]); } catch { continue; }
+    if (!e || typeof e !== "object" || (e.isSidechain === true && !sidechain)) continue;
+    yield e;
+  }
+}
+
+const usageSum = (u) => (u && typeof u === "object"
+  ? (+u.input_tokens || 0) + (+u.cache_read_input_tokens || 0) + (+u.cache_creation_input_tokens || 0) : 0);
+
+// context size in tokens: stdin usage if the event carries it, else the newest assistant
+// usage in the transcript; 0 after a compaction boundary with no reply since, or on any doubt
+function contextTokens(ev) {
+  const direct = usageSum(ev.raw.usage);
+  if (direct > 0) return direct;
+  for (const e of entriesBackward(tailLines(ev.raw.transcript_path))) {
+    if (e.subtype === "compact_boundary" || e.isCompactSummary) return 0;
+    const m = e.message;
+    if (!m || (e.type !== "assistant" && m.role !== "assistant")) continue;
+    const n = usageSum(m.usage);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+const textOf = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b && b.type === "text").map((b) => b.text).join("\n") : "");
+
+// text of the newest assistant message that has any; a subagent's own transcript
+// (agent_transcript_path, every entry a sidechain) wins over the session's
+function lastAssistantText(ev) {
+  if (typeof ev.raw.last_assistant_message === "string") return ev.raw.last_assistant_message;
+  const own = ev.raw.agent_transcript_path;
+  for (const e of entriesBackward(tailLines(own || ev.raw.transcript_path), !!own)) {
+    const m = e.message;
+    if (!m || (e.type !== "assistant" && m.role !== "assistant")) continue;
+    const text = textOf(m.content);
+    if (text.trim()) return text;
+  }
+  return "";
+}
+
+// a subagent's brief: the first user message of its own transcript. The hook input names that file as
+// agent_transcript_path where Claude Code sends it; else it is <session dir>/<session id>/subagents/agent-<id>.jsonl
+// beside the session's transcript. "" on the main thread, or when the file or message is missing.
+function briefText(ev) {
+  const r = ev && ev.raw ? ev.raw : {};
+  if (!ev || !ev.agent) return "";
+  const t = r.transcript_path, sid = r.session_id;
+  const file = r.agent_transcript_path || (t && sid ? path.join(path.dirname(t), String(sid), "subagents", `agent-${String(ev.agent).replace(/[^\w.-]/g, "_")}.jsonl`) : "");
+  for (const l of headLines(file)) {
+    let e;
+    try { e = JSON.parse(l); } catch { continue; }
+    if (!e || e.type !== "user" || !e.message) continue;
+    return textOf(e.message.content);
+  }
+  return "";
+}
+// the first `bytes` of a file as complete lines
+function headLines(file, bytes = 1024 * 1024) {
+  if (!file) return [];
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(Math.min(bytes, fs.fstatSync(fd).size));
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const lines = buf.subarray(0, n).toString("utf8").split("\n");
+    if (n === bytes) lines.pop();
+    return lines.filter((l) => l.trim());
+  } catch { return []; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+
+// newest prompt the human typed, from the transcript tail; null when none is found.
+// Newer transcripts tag it origin.kind "human"; older ones are told apart by their prefix.
+const NOT_HUMAN = /^\s*(<task-notification|<local-command|<cross-session-message|\[Request interrupted|Another Claude session)/;
+function lastHumanPrompt(ev) {
+  // image tool results make lines huge, so look further back and parse only candidate lines
+  const lines = tailLines(ev.raw.transcript_path, 4 * 1024 * 1024)
+    .filter((l) => l.includes("compact_boundary") || (l.includes('"type":"user"') && !l.includes('"toolUseResult"')));
+  for (const e of entriesBackward(lines)) {
+    if (e.subtype === "compact_boundary") return null;
+    if (e.type !== "user" || e.isMeta || e.isCompactSummary || e.toolUseResult !== undefined || !e.message) continue;
+    const text = textOf(e.message.content);
+    if (!text.trim()) continue;
+    if (e.origin ? e.origin.kind !== "human" : NOT_HUMAN.test(text)) continue;
+    return text;
+  }
+  return null;
+}
+
+// the session's model: the event's (SessionStart carries it), else the newest main-thread reply's
+function sessionModel(ev) {
+  if (ev.model) return ev.model;
+  for (const e of entriesBackward(tailLines(ev.raw.transcript_path))) {
+    const id = e.message && (e.type === "assistant" || e.message.role === "assistant") && e.message.model;
+    if (typeof id === "string" && id && !id.startsWith("<")) return id;
+  }
+  return "";
+}
+
+// the model's nominal context window: 1M for a [1m] id and for the models whose window is 1M
+// natively (Fable, Mythos, Opus 4.7 and later, Sonnet 5 and later, and the bare aliases, which
+// name the newest); 200k for Haiku and older Opus and Sonnet; 0 for an id this does not know
+function modelWindow(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("[1m]")) return 1000000;
+  const f = /(haiku|sonnet|opus|fable|mythos)(?:[-. ](\d{1,2})(?!\d)(?:[-.](\d{1,2})(?!\d))?)?/.exec(m);
+  if (!f) return 0;
+  if (f[1] === "haiku") return 200000;
+  if (f[1] === "fable" || f[1] === "mythos") return 1000000;
+  if (!f[2]) return /\d/.test(m) ? 200000 : 1000000; // claude-3-5-sonnet-… is old; a bare alias is the newest
+  const v = +f[2] + (f[3] ? +f[3] / 10 : 0);
+  return v >= (f[1] === "opus" ? 4.7 : 5) ? 1000000 : 200000;
+}
+
+// the window the human capped Claude Code at, or 0: CLAUDE_CODE_AUTO_COMPACT_WINDOW, else
+// autoCompactWindow in the settings files (local, project, user; a modelSettings entry for this
+// model before the plain key), and at most 200k under CLAUDE_CODE_DISABLE_1M_CONTEXT
+function contextCap(ev, model) {
+  const off = String(process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT || "").toLowerCase();
+  const no1m = off && off !== "0" && off !== "false" ? 200000 : Infinity;
+  let cap = +process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  if (!(cap > 0)) {
+    const root = (ev && ev.root) || process.cwd();
+    const files = [path.join(root, ".claude", "settings.local.json"), path.join(root, ".claude", "settings.json"), path.join(home, "settings.json")];
+    const all = files.map((f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")) || {}; } catch { return {}; } });
+    const id = String(model || "").toLowerCase().replace(/\[1m\]$/, "");
+    const per = (s) => s.modelSettings && s.modelSettings[id] && s.modelSettings[id].autoCompactWindow;
+    cap = +(all.map(per).find((n) => +n > 0) || all.map((s) => s.autoCompactWindow).find((n) => +n > 0) || 0);
+  }
+  const n = Math.min(cap > 0 ? cap : Infinity, no1m);
+  return n === Infinity ? 0 : n;
+}
+
+// ---- install: where things live, and the hook registrations
+
+const home = claudeDir();
+// the project's, the user's, then the plugin's (Claude Code sets CLAUDE_PLUGIN_ROOT for a plugin's hooks)
+const skillDirs = (root) => [path.join(root, ".claude", "skills", "proteus"), path.join(home, "skills", "proteus"),
+  ...(process.env.CLAUDE_PLUGIN_ROOT ? [path.join(process.env.CLAUDE_PLUGIN_ROOT, "skills", "proteus")] : [])];
+const agentsDir = path.join(home, "agents");
+const hooksDir = (root) => path.join(root, ".claude", "hooks");
+// loaded once a worker reads a file in the team folder
+const teamSkills = (team) => path.join(team, ".claude", "skills");
+// every template file lands in hooksDir (existing repos' gates name .claude/hooks/commit-msg.js)
+const skipHooks = [];
+// a shipped agent as this CLI keeps it: {name, text}, or null to skip it
+const agentFile = (file, text) => ({ name: path.basename(file), text });
+const leadSettings = (root) => path.join(root, ".claude", "settings.local.json");
+
+// where installed plugins keep their skills, then the dirs `npx skills add` links into (proteus-skillpath.js)
+const skillRoots = () => [path.join(home, "plugins", "cache"), path.join(home, "skills"), path.join(os.homedir(), ".agents", "skills")];
+
+// the optional context-mode plugin: installed and enabled at user scope (two small file reads)
+function contextModeOn() {
+  const id = "context-mode@context-mode";
+  const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")) || {}; } catch { return {}; } };
+  const inst = read(path.join(home, "plugins", "installed_plugins.json"));
+  const s = read(path.join(home, "settings.json"));
+  return !!(inst.plugins && Array.isArray(inst.plugins[id]) && inst.plugins[id].length && s.enabledPlugins && s.enabledPlugins[id] === true);
+}
+
+// The lead's hook set in .claude/settings.local.json. Only adds; never removes a user hook.
+const LEAD_GUARD_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Agent|Task|Bash|Monitor|Read";
+const OLD_GUARD_MATCHERS = ["Edit|Write|MultiEdit|NotebookEdit|Agent|Task", "Edit|Write|MultiEdit|NotebookEdit|Agent|Task|Bash|Monitor"];
+// [event, script, matcher, timeout s]; the autostart may pull and query gh
+const LEAD_HOOKS = [
+  ["SessionStart", "proteus-autostart.js", undefined, 60],
+  ["UserPromptSubmit", "proteus-journal.js"],
+  ["UserPromptSubmit", "proteus-lessons.js"],
+  ["PreToolUse", "proteus-lead-guard.js", LEAD_GUARD_MATCHER],
+  ["PreToolUse", "proteus-lessons.js", "Bash|Edit|Write|Read"],
+  ["PostToolUse", "proteus-lessons.js", "Bash"],
+  ["PreToolUse", "proteus-scratch.js", "Bash"],
+  ["PostToolUse", "proteus-scratch.js", "Bash"],
+  ["PostToolUseFailure", "proteus-scratch.js", "Bash"],
+  ["PostToolUse", "proteus-shell-check.js", "Bash"],
+  ["PostToolUseFailure", "proteus-shell-check.js", "Bash"],
+  ["SubagentStop", "proteus-stall.js"],
+  ["TeammateIdle", "proteus-stall.js"],
+];
+
+// the plugin's hooks/hooks.json (scripts/plugin-hooks.js writes it): LEAD_HOOKS, each through proteus-plugin.js,
+// the per-repo gate, from the plugin root. No statusLine: a plugin cannot set one.
+function pluginHooks() {
+  const hooks = {};
+  for (const [ev, script, matcher, timeout] of LEAD_HOOKS) {
+    const cmd = `node "\${CLAUDE_PLUGIN_ROOT}/templates/hooks/proteus-plugin.js" ${script}`;
+    (hooks[ev] = hooks[ev] || []).push({ ...(matcher && { matcher }), hooks: [{ type: "command", command: cmd, ...(timeout && { timeout }) }] });
+  }
+  return { hooks };
+}
+
+// a hook's command: the script's absolute path, forward slashes, double-quoted. cmd.exe, PowerShell and bash all
+// run that as is; $CLAUDE_PROJECT_DIR is bash's alone, so a Windows session without Git Bash could not (#96).
+const hookCommand = (root, f) => `node "${path.resolve(hooksDir(root), f).split(path.sep).join("/")}"`;
+// a command Proteus wrote for script, in any form it ever used
+const OWN_CMD = (script) => new RegExp(`^node "[^"]*/\\.claude/hooks/${script.replace(/\./g, "\\.")}"$`);
+
+// returns {file, changed} or {file, error} (invalid JSON is never overwritten)
+function registerLead(root) {
+  const file = leadSettings(root);
+  let raw = null;
+  try { raw = fs.readFileSync(file, "utf8"); } catch {}
+  let s = {};
+  if (raw !== null && raw.trim()) {
+    try { s = JSON.parse(raw); } catch (e) { return { file, error: `${file} is not valid JSON (${e.message})` }; }
+    if (!s || typeof s !== "object" || Array.isArray(s)) return { file, error: `${file} is not a JSON object` };
+  }
+  const before = JSON.stringify(s);
+  s.hooks = s.hooks && typeof s.hooks === "object" ? s.hooks : {};
+  const cmd = (f) => hookCommand(root, f);
+  const names = (entry) => JSON.stringify((entry && entry.hooks) || []);
+  for (const [ev, script, matcher, timeout] of LEAD_HOOKS) {
+    const list = (s.hooks[ev] = Array.isArray(s.hooks[ev]) ? s.hooks[ev] : []);
+    const have = list.filter((e) => names(e).includes(script));
+    if (have.length) {
+      for (const e of have) if (script === "proteus-lead-guard.js" && OLD_GUARD_MATCHERS.includes(e.matcher)) e.matcher = matcher;
+      // an older install's $CLAUDE_PROJECT_DIR form, or a path from before the checkout moved
+      for (const e of have) for (const h of Array.isArray(e && e.hooks) ? e.hooks : []) if (h && OWN_CMD(script).test(String(h.command))) h.command = cmd(script);
+      continue;
+    }
+    const entry = { hooks: [{ type: "command", command: cmd(script), ...(timeout && { timeout }) }] };
+    if (matcher) entry.matcher = matcher;
+    list.push(entry);
+  }
+  // statusLine commands are not documented to get $CLAUDE_PROJECT_DIR: absolute path, forward
+  // slashes (this file is machine-local). Only when the project sets no statusLine of its own.
+  if (!("statusLine" in s)) {
+    const script = path.resolve(path.dirname(file), "hooks", "proteus-statusline.js").split(path.sep).join("/");
+    s.statusLine = { type: "command", command: `node "${script}"` };
+  }
+  if (JSON.stringify(s) === before) return { file, changed: false };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+  return { file, changed: true };
+}
+
+// guest mode: the guest dir outside the project, open to the session without a prompt per file
+// (permissions.additionalDirectories in .claude/settings.local.json). write=false only checks.
+// Returns {file, dir, changed}, {file, dir, missing} or {file, dir, error}.
+function allowDir(root, dir, write = true) {
+  const file = leadSettings(root), want = path.resolve(dir);
+  let s = {};
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    if (raw.trim()) s = JSON.parse(raw);
+  } catch (e) { if (e.code !== "ENOENT") return { file, dir: want, error: `${file} is not valid JSON (${e.message})` }; }
+  if (!s || typeof s !== "object" || Array.isArray(s)) return { file, dir: want, error: `${file} is not a JSON object` };
+  const perms = s.permissions && typeof s.permissions === "object" && !Array.isArray(s.permissions) ? s.permissions : {};
+  const list = Array.isArray(perms.additionalDirectories) ? perms.additionalDirectories : [];
+  if (list.some((d) => typeof d === "string" && path.resolve(d) === want)) return { file, dir: want, changed: false };
+  if (!write) return { file, dir: want, missing: true };
+  s.permissions = { ...perms, additionalDirectories: [...list, want] };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+  return { file, dir: want, changed: true };
+}
+
+// a worker's worktree: its hooks, registered by the worktree settings template beside this file, and
+// package.json, which keeps them CommonJS in a "type": "module" repo (#77)
+const WORKER_HOOKS = ["proteus-lib.js", "proteus-confine.js", "proteus-harness.js", "proteus-harness-claude.js", "proteus-owned-paths.js", "proteus-owned-check.js", "proteus-tier.js", "proteus-worker-guard.js", "proteus-stall.js", "proteus-lessons.js", "proteus-scratch.js", "proteus-shell-check.js", "proteus-gh.js", "proteus-gates-cache.js", "package.json"];
+const WORKER_EXCLUDE = ["/.claude/proteus-owned", "/.claude/settings.local.json", "/.claude/hooks/proteus-*.js", "/.claude/hooks/package.json"];
+function prepareWorker(wt, src) {
+  const dir = hooksDir(wt);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of WORKER_HOOKS) fs.copyFileSync(path.join(src, f), path.join(dir, f));
+  // the template names its hooks under $CLAUDE_PROJECT_DIR; the copy names this worktree's, absolute (hookCommand)
+  const t = JSON.parse(fs.readFileSync(path.join(src, "worktree-settings.local.json"), "utf8"));
+  for (const list of Object.values(t.hooks)) for (const e of list) for (const h of e.hooks) h.command = hookCommand(wt, /([\w.-]+\.js)"$/.exec(h.command)[1]);
+  fs.writeFileSync(path.join(wt, ".claude", "settings.local.json"), JSON.stringify(t, null, 2) + "\n");
+  return WORKER_EXCLUDE;
+}
+// the file a worker's worktree lists its owned paths in
+const ownedFile = (wt) => path.join(wt, ".claude", "proteus-owned");
+
+// vars for every later Bash call of this session, subagents' included: export lines in the file SessionStart
+// hooks get as CLAUDE_ENV_FILE. Values go single-quoted with forward slashes (Git Bash on Windows reads them too).
+// An empty value writes nothing. Returns { error } when it cannot.
+function exportEnv(root, vars) {
+  const set = Object.entries(vars).filter(([, v]) => v);
+  if (!set.length) return {};
+  const file = process.env.CLAUDE_ENV_FILE;
+  if (!file) return { error: "no CLAUDE_ENV_FILE (Claude Code gives it to SessionStart hooks only)" };
+  const lines = [];
+  for (const [k, v] of set) {
+    const val = String(v).replace(/\\/g, "/");
+    if (val.includes("'")) return { error: `${k} holds a quote` };
+    lines.push(`export ${k}='${val}'\n`);
+  }
+  fs.appendFileSync(file, lines.join(""));
+  return {};
+}
+
+module.exports = {
+  name, bypass, models, spawnEffort, projectRoot, event, deny, ask, noAsk, context, keepGoing, postBlock,
+  contextTokens, lastAssistantText, lastHumanPrompt, sessionModel, briefText, modelWindow, contextCap,
+  home, skillDirs, agentsDir, hooksDir, teamSkills, skipHooks, agentFile, skillRoots, contextModeOn, registerLead, allowDir, prepareWorker, ownedFile, LEAD_HOOKS, pluginHooks, exportEnv,
+};

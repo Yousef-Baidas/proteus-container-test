@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "skills": {
+    "install-anti-slop": {
+      "source": "dmmulroy/anti-slop",
+      "hash": "3d130483265111efd1464bff63d03ad451ff813cc157d185374cdbedb4f9607d"
+    },
+    "multi-stage-dockerfile": {
+      "source": "github/awesome-copilot",
+      "hash": "6ab1ed0d7a7b94ccfa5fcbad4aff631383f178c783d0e647becd1e8ac0fad78d"
+    },
+    "thermo-nuclear-code-quality-review": {
+      "source": "cursor/plugins",
+      "hash": "1bb59994582195f4e209546efe5f9fc5d05d6f19c91d5b18048d0f2186a4fbd2"
+    },
+    "playwright-cli": {
+      "source": "microsoft/playwright-cli",
+      "hash": "657677c0087f56488b3773c0c8744cfba5ffab483be02337c1434b798081fcb6"
+    },
+    "playwright-best-practices": {
+      "source": "currents-dev/playwright-best-practices-skill",
+      "hash": "1c0a686422dfa63861fbcf36145c3df18e8e5b1694711cb8123be99603dda0b1"
+    },
+    "javascript-typescript-jest": {
+      "source": "github/awesome-copilot",
+      "hash": "bc2f026724127b395e5fe517a45bd415d810f1cdc43a700563d297cee74e2309"
+    },
+    "python-testing-patterns": {
+      "source": "wshobson/agents",
+      "hash": "22d53be9812ee5f69e91bf38dd0a9605245294a1c4dff8aec37c42ba23310f71"
+    },
+    "rust-testing": {
+      "source": "affaan-m/ecc",
+      "hash": "6443f1c19686397ae9e85ae2cb4e527cf049085538a50bc12e78c3c67e73807d"
+    },
+    "sql-code-review": {
+      "source": "github/awesome-copilot",
+      "hash": "990fbcb6d3808c98985656ff984e57d607091f98af30e7c495cc6f7baf1f1ce4"
+    },
+    "two-factor-authentication-best-practices": {
+      "source": "better-auth/skills",
+      "hash": "1d24faf3ab1f8caf1fc0e461f76a1d414cf330b1eb2d1ffcb90ab45db02ddae9"
+    }
+  }
+}
