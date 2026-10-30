@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { countLines, countWords } from "./count.js";
+import { countLines, countWords, topWords } from "./count.js";
 
 let parsed;
 try {
   parsed = parseArgs({
     allowPositionals: true,
-    options: { lines: { type: "boolean" } },
+    options: { lines: { type: "boolean" }, top: { type: "string" } },
   });
 } catch (error) {
   console.error(`wordstat: ${error.message}`);
@@ -20,6 +20,11 @@ if (positionals.length > 1) {
   process.exit(2);
 }
 
+if (values.top !== undefined && (values.lines || !/^[1-9]\d*$/.test(values.top))) {
+  console.error("wordstat: --top takes a positive integer and excludes --lines");
+  process.exit(2);
+}
+
 const file = positionals[0];
 let text;
 try {
@@ -29,4 +34,6 @@ try {
   process.exit(1);
 }
 
-console.log(values.lines ? countLines(text) : countWords(text));
+if (values.top !== undefined) {
+  for (const [word, n] of topWords(text, Number(values.top))) console.log(`${n} ${word}`);
+} else console.log(values.lines ? countLines(text) : countWords(text));
