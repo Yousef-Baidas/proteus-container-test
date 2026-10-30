@@ -1,0 +1,7 @@
+.github/**
+lefthook.yml
+.oxlintrc.json
+tools/**
+package.json
+package-lock.json
+test/gates.test.js
