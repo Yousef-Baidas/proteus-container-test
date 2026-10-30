@@ -40,6 +40,18 @@
     "two-factor-authentication-best-practices": {
       "source": "better-auth/skills",
       "hash": "1d24faf3ab1f8caf1fc0e461f76a1d414cf330b1eb2d1ffcb90ab45db02ddae9"
+    },
+    "node": {
+      "source": "mcollina/skills",
+      "hash": "8d73e2cc5ae66bd3594cd33bcc72085fd6d936ad942efb3e10ae8c8fd0f36171"
+    },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "hash": "c7bd017fedd677de169904f610438647a586350f82bd80ce0b12ad9d3cebddf5"
+    },
+    "security-review": {
+      "source": "getsentry/skills",
+      "hash": "a74d7421eca101950a509a489ad33646ac2741ad06724a3d9eb581686dae0199"
     }
   }
 }
