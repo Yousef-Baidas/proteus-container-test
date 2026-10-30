@@ -4,7 +4,13 @@ export function countWords(text) {
 }
 
 export function topWords(text, n) {
-  throw new Error(`not implemented: topWords(${text.length} chars, ${n})`);
+  const freq = new Map();
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    freq.set(word, (freq.get(word) ?? 0) + 1);
+  }
+  return [...freq]
+    .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, n);
 }
 
 export function countLines(text) {
