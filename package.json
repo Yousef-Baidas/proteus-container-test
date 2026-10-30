@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "wordstat": "src/cli.js" },
-  "scripts": { "test": "node --test" }
+  "bin": {
+    "wordstat": "src/cli.js"
+  },
+  "scripts": {
+    "lint": "oxlint --deny-warnings",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.90.0",
+    "lefthook": "2.2.2",
+    "oxlint": "1.90.0"
+  }
 }
