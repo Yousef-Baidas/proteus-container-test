@@ -4,5 +4,7 @@ export function countWords(text) {
 }
 
 export function countLines(text) {
-  throw new Error(`countLines not implemented: ${text.length}`);
+  if (text === "") return 0;
+  const lines = text.split("\n").length;
+  return text.endsWith("\n") ? lines - 1 : lines;
 }
