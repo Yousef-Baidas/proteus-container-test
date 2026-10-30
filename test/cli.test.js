@@ -16,6 +16,7 @@ const count = fileURLToPath(new URL("../src/count.js", import.meta.url));
 const lineCases = [
   ["a\nb", 2],
   ["a\nb\n", 2],
+  ["a b\nc d\n", 2],
   ["", 0],
 ];
 
@@ -85,6 +86,17 @@ test("lines", async (t) => {
       assert.equal(result.stdout, `${expected}\n`);
     });
   }
+
+  await t.test("two file arguments exit 2", () => {
+    const first = join(dir, "first.txt");
+    const second = join(dir, "second.txt");
+    writeFileSync(first, "a\n");
+    writeFileSync(second, "b\n");
+    const result = run([first, second]);
+    assert.equal(result.status, 2, `two files must exit 2, got ${result.status}`);
+    assert.equal(result.stdout, "");
+    assert.notEqual(result.stderr, "");
+  });
 
   await t.test("unknown flag exits 2 without reading input", async () => {
     const result = await runWithStdinHeldOpen(["--bogus"]);
