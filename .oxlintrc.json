@@ -39,11 +39,15 @@
     "anti-slop/no-unknown-type-aliases": "error",
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
-    // CONVENTIONS.md Style fixes quotes, semicolons and indent only, and src/ is written without blank lines between statements; src/ is not this ticket's to reformat, so the rule is off
-    "anti-slop/require-readable-spacing": "off",
+    "anti-slop/require-readable-spacing": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error"
   },
   "overrides": [
+    {
+      // findings that predate the gate, in paths this ticket cannot edit; the frozen check needs `npx oxlint` to exit 0, so the baseline ratchet cannot stand in
+      "files": ["src/cli.js", "src/count.js", "test/gates.test.js"],
+      "rules": { "anti-slop/require-readable-spacing": "off" }
+    },
     {
       // the contract check is committed as written and may not be edited
       "files": ["test/gates.test.js"],
