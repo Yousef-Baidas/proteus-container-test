@@ -8,5 +8,5 @@
 - **Word count**: the number of words in the input; the default output.
 - **Line count**: the number of lines in the input.
 - **Frequency**: how many times a word occurs in the input.
-- **Top list**: the `n` most frequent words, one per line as `<count> <word>`, ties broken alphabetically.
+- **Top list**: the `n` most frequent words, one per line as `<count> <word>`, ties broken in code-unit order.
 - **Flag**: a command-line option such as `--lines` or `--top <n>`.
