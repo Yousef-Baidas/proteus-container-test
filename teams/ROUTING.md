@@ -8,6 +8,7 @@ One row per deliverable type or path pattern → the one team that owns it. The 
 | tests for a path | the team that owns the path |
 | docs for a path | the team that owns the path |
 | root docs (`CLAUDE.md`, `AGENTS.md`), docs-diet tickets | devops |
+| `src/**`, `test/**`, `package.json`, `README.md` | cli |
 
 ## Tiers
 
@@ -30,6 +31,7 @@ README.md               direct  lines=30 files=1
 CHANGELOG.md            direct  lines=30 files=1
 # small single-team code changes, once CI's gates cover them:
 # src/**                quick   lines=80 files=3
+# test/**               quick   lines=120 files=3
 ```
 
 ## Security
@@ -57,6 +59,7 @@ A PR into the run branch that changes a path one of these globs matches needs th
 Dockerfile
 **/Dockerfile
 infra/**
+src/cli.js
 **/package.json
 **/package-lock.json
 **/pnpm-lock.yaml
