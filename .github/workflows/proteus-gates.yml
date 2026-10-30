@@ -1,0 +1,125 @@
+# .github/workflows/proteus-gates.yml — written by the Proteus scaffold ticket.
+# Every PR into proteus/* runs the same gates the worker ran. The ruleset on proteus/*
+# (install.js --protect) requires a check named exactly `gates` green; keep the job id.
+# It also requires two commit statuses on the PR head, which this file never posts:
+# proteus/verdict, the verifier's MERGE (proteus-signoff.js), and proteus/security, posted by
+# proteus-trust.yml from the base branch. A push after the review leaves the new head without them.
+# Every push to proteus/* (each merge) runs `gates` again on the integrated tree and then `qa`,
+# the mechanical QA: smoke from a fresh install. This project has no e2e suite, no non-code
+# deliverable and no mutation tool, so those steps are absent.
+# PRs into main come from the Direct and Quick tiers (SKILL.md rule 3); rename main if the default branch differs.
+# Keep it hardened. PR code runs here, and a fork names its own head branch:
+# - a ${{ }} value a script needs goes through env: and is read as "$VAR", never written inside run:;
+# - the token is read-only (permissions:) and not left in .git/config (persist-credentials: false);
+#   add a scope only to the job whose step needs it;
+# - every action is pinned to a full commit SHA with its version as a comment;
+# - installs skip lifecycle scripts (npm ci --ignore-scripts).
+name: proteus-gates
+on:
+  pull_request:
+    branches: ["proteus/**", "main"]
+  push:
+    branches: ["proteus/**"]
+permissions:
+  contents: read
+jobs:
+  gates:
+    # every push to and PR into a run branch; into main only a Quick ticket's (the human's own PRs are not Proteus's to gate)
+    if: github.event_name == 'push' || startsWith(github.base_ref, 'proteus/') || startsWith(github.head_ref, 'proteus-work/quick/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # the PR head, not the synthetic merge commit; on a push, the pushed commit
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      # a worker's PR (head proteus-work/<run>/<id>) may change only the ticket's owned paths, as the lead
+      # recorded them in .proteus/owned/<id> on the run branch; the check reads the base's copy, never the
+      # PR's or its body, and runs the base's checker, so the PR changes neither. PRs into main (Quick,
+      # Direct, which the human merges) and runs cut before the records read the PR body's line,
+      # "Owned: src/a/ tests/a.test.js". Shell writes (sed -i, redirects) skip the edit hooks, so this
+      # is their check.
+      - name: owned paths
+        if: startsWith(github.head_ref, 'proteus-work/')
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add -q --detach "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          node "$RUNNER_TEMP"/base/teams/templates/hooks/proteus-owned-check.js --ci "origin/$BASE_REF"
+      # the change must fit its declared tier (the PR body's "Tier:" line, standard without one) by the
+      # tiers block of teams/ROUTING.md as of the base; a change that outgrew it is re-run at the tier named
+      - name: tier
+        if: startsWith(github.head_ref, 'proteus-work/')
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node teams/templates/hooks/proteus-tier.js --ci "origin/$BASE_REF"
+      - name: commit messages
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for c in $(git rev-list "origin/$BASE_REF..HEAD"); do
+            git log -1 --format=%B "$c" > "$RUNNER_TEMP/msg" && node teams/templates/hooks/commit-msg.js "$RUNNER_TEMP/msg" || exit 1
+          done
+  # Direct tier: a batched docs PR from proteus-work/direct/<batch> into main runs the mechanical gates only;
+  # the tier step fails it once the batch outgrows Direct. This project has no docs checks.
+  direct:
+    if: startsWith(github.head_ref, 'proteus-work/direct/') && !startsWith(github.base_ref, 'proteus/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: owned paths
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add -q --detach "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          node "$RUNNER_TEMP"/base/teams/templates/hooks/proteus-owned-check.js --ci "origin/$BASE_REF"
+      - name: tier
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node teams/templates/hooks/proteus-tier.js --ci "origin/$BASE_REF"
+      - name: commit messages
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for c in $(git rev-list "origin/$BASE_REF..HEAD"); do
+            git log -1 --format=%B "$c" > "$RUNNER_TEMP/msg" && node teams/templates/hooks/commit-msg.js "$RUNNER_TEMP/msg" || exit 1
+          done
+  qa:
+    if: github.event_name == 'push'
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: smoke
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/smoke"
+          cd "$RUNNER_TEMP/smoke"
+          npm init -y >/dev/null
+          npm i --ignore-scripts "$RUNNER_TEMP"/proteus-container-test-*.tgz
+          echo "one two three" > words.txt
+          test "$(npx --no wordstat words.txt)" = 3
